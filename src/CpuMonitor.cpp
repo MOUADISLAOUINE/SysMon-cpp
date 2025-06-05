@@ -1,121 +1,176 @@
 #include "../include/CpuMonitor.h"
+#include "../include/SysMon.h" // Needed for SysMon::getInfo
 #include <fstream>
 #include <sstream>
-#include <unistd.h>
-#include <iostream>
+#include <iostream> // For cerr
 
-using namespace std;
-
-// ------------------ Constructeur ------------------
+// Constructeur
 CpuMonitor::CpuMonitor() {
-    CPU.nbrCPU = sysconf(_SC_NPROCESSORS_ONLN);
-    CPU.usagePerCPU = new float[CPU.nbrCPU];
-    CPU.frequencyMax = getCpuFreq();  // approximation si cpuinfo_max_freq absent
-    CPU.frequency = CPU.frequencyMax;
-    CPU.usageCPU = 0.0;
-    updateTimes(); // initialise les temps
+    CPU.frequencyMax = 0; // Will attempt to get this from /proc/cpuinfo if possible
+    CPU.nbrCPU = 0; // Will be determined from /proc/stat
+    CPU.usageCPU = 0.0f;
+    CPU.usagePerCPU = nullptr; // Initialize to nullptr
+    updateTimes(); // Get initial CPU times
 }
 
-// ------------------ Destructeur ------------------
+// Destructeur
 CpuMonitor::~CpuMonitor() {
-    delete[] CPU.usagePerCPU;
+    if (CPU.usagePerCPU != nullptr) {
+        delete[] CPU.usagePerCPU;
+        CPU.usagePerCPU = nullptr;
+    }
 }
 
-// ------------------ Lecture des temps CPU ------------------
+// Reads CPU time values from /proc/stat
 CpuTimes CpuMonitor::readCpuTimes() {
-    ifstream file("/proc/stat");
-    string line;
     CpuTimes times;
+    std::string line = SysMon::getInfo("/proc/stat");
+    if (line == " ") { // Handle error from getInfo
+        std::cerr << "Error: Could not read /proc/stat for CPU times." << std::endl;
+        return times; // Return default initialized times
+    }
 
-    if (file.is_open()) {
-        getline(file, line);
-        istringstream ss(line);
-        string cpuLabel;
-        ss >> cpuLabel;
-        ss >> times.user >> times.nice >> times.system >> times.idle
-           >> times.iowait >> times.irq >> times.softirq
-           >> times.steal >> times.guest >> times.guest_nice;
+    std::istringstream iss(line);
+    std::string cpuName;
+    iss >> cpuName; // Read "cpu"
+
+    // Read global CPU times
+    iss >> times.user >> times.nice >> times.system >> times.idle >> times.iowait
+        >> times.irq >> times.softirq >> times.steal >> times.guest >> times.guest_nice;
+    
+    // Count number of CPUs and initialize usagePerCPU
+    // We'll re-read /proc/stat to count "cpuX" lines
+    std::string fullStatContent = SysMon::getInfo("/proc/stat");
+    std::istringstream fullIss(fullStatContent);
+    std::string currentLine;
+    short tempNbrCPU = 0;
+    while (std::getline(fullIss, currentLine)) {
+        if (currentLine.rfind("cpu", 0) == 0 && currentLine.length() > 3 && std::isdigit(currentLine[3])) {
+            tempNbrCPU++;
+        }
+    }
+    
+    if (CPU.nbrCPU != tempNbrCPU) {
+        CPU.nbrCPU = tempNbrCPU;
+        if (CPU.usagePerCPU != nullptr) {
+            delete[] CPU.usagePerCPU;
+        }
+        CPU.usagePerCPU = new float[CPU.nbrCPU];
+        for (int i = 0; i < CPU.nbrCPU; ++i) {
+            CPU.usagePerCPU[i] = 0.0f;
+        }
     }
 
     return times;
 }
 
-// ------------------ Mise à jour des temps ------------------
 void CpuMonitor::updateTimes() {
-    previousTimes = currentTimes;
-    currentTimes = readCpuTimes();
+    previousTimes = currentTimes; // Save current as previous
+    currentTimes = readCpuTimes(); // Get new current times
 }
 
-// ------------------ Calcul de l'utilisation CPU ------------------
 float CpuMonitor::getCpuUsage() {
-    updateTimes();
+    updateTimes(); // Always update before calculating usage
+
     long long prevIdle = previousTimes.totalIdleTime();
-    long long idle = currentTimes.totalIdleTime();
-
     long long prevTotal = previousTimes.totalTime();
-    long long total = currentTimes.totalTime();
+    long long currIdle = currentTimes.totalIdleTime();
+    long long currTotal = currentTimes.totalTime();
 
-    long long deltaTotal = total - prevTotal;
-    long long deltaIdle = idle - prevIdle;
+    long long totalDiff = currTotal - prevTotal;
+    long long idleDiff = currIdle - prevIdle;
 
-    if (deltaTotal == 0) return 0.0;
+    if (totalDiff == 0) {
+        return 0.0f; // Avoid division by zero
+    }
 
-    return 100.0f * (1.0f - ((float)deltaIdle / deltaTotal));
+    CPU.usageCPU = 100.0f * (1.0f - static_cast<float>(idleDiff) / totalDiff);
+
+    // To-Do: Calculate usage per CPU if needed, requires parsing each "cpuX" line
+    // For now, usagePerCPU will remain 0.0f unless implemented
+    return CPU.usageCPU;
 }
 
-// ------------------ Récupération de la fréquence CPU ------------------
 float CpuMonitor::getCpuFreq() {
-    ifstream file("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
-    float freq = 0.0;
+    // Reading CPU frequency can be tricky as it changes dynamically.
+    // /proc/cpuinfo provides static info, actual frequency is often in /sys/devices/system/cpu/cpuX/cpufreq/scaling_cur_freq
+    // This requires reading multiple files. For simplicity, let's use a placeholder or read base frequency from /proc/cpuinfo.
 
-    if (file.is_open()) {
-        file >> freq;
-        file.close();
-        freq /= 1000.0f; // Hz → MHz
-    } else {
-        // fallback : lire depuis /proc/cpuinfo
-        file.open("/proc/cpuinfo");
-        string line;
-        while (getline(file, line)) {
-            if (line.find("cpu MHz") != string::npos) {
-                size_t pos = line.find(":");
-                if (pos != string::npos) {
-                    freq = stof(line.substr(pos + 1));
+    std::string cpuinfoContent = SysMon::getInfo("/proc/cpuinfo");
+    std::istringstream iss(cpuinfoContent);
+    std::string line;
+    float currentFreq = 0.0f;
+    while (std::getline(iss, line)) {
+        if (line.find("cpu MHz") != std::string::npos) {
+            std::string freqStr = line.substr(line.find(":") + 1);
+            try {
+                currentFreq = std::stof(freqStr);
+                // Assuming all cores have roughly the same frequency for simplicity
+                break; 
+            } catch (const std::exception& e) {
+                // Handle parsing error
+            }
+        }
+    }
+    CPU.frequency = currentFreq;
+
+    // Get max frequency from /proc/cpuinfo, typically 'cpu MHz' on the first processor entry
+    if (CPU.frequencyMax == 0) { // Only set once
+        std::istringstream maxFreqIss(cpuinfoContent);
+        while (std::getline(maxFreqIss, line)) {
+            if (line.find("MHz") != std::string::npos) {
+                std::string freqStr = line.substr(line.find(":") + 1);
+                try {
+                    CPU.frequencyMax = std::stof(freqStr);
                     break;
+                } catch (const std::exception& e) {
+                    // Handle parsing error
                 }
             }
         }
-        file.close();
     }
-
-    return freq;
+    return CPU.frequency;
 }
 
-// ------------------ Récupération de la description CPU brute ------------------
-string CpuMonitor::getCpuInfo() {
-    ifstream file("/proc/cpuinfo");
-    string line, result;
+std::string CpuMonitor::getCpuInfo() {
+    // This can return raw content of /proc/cpuinfo or a formatted string.
+    // For now, let's return a summary.
+    std::string info = SysMon::getInfo("/proc/cpuinfo");
+    std::stringstream ss;
+    std::string line;
+    std::string modelName = "N/A";
+    int cores = 0;
 
-    while (getline(file, line)) {
-        result += line + "\n";
+    std::istringstream iss(info);
+    while (std::getline(iss, line)) {
+        if (line.find("model name") != std::string::npos) {
+            modelName = line.substr(line.find(":") + 2);
+            // Remove leading/trailing whitespace
+            modelName.erase(0, modelName.find_first_not_of(" \t"));
+            modelName.erase(modelName.find_last_not_of(" \t\r\n") + 1);
+        } else if (line.find("cpu cores") != std::string::npos) {
+            std::string coresStr = line.substr(line.find(":") + 2);
+            try {
+                cores = std::stoi(coresStr);
+            } catch (const std::exception& e) {
+                // Handle parsing error
+            }
+        }
     }
+    
+    ss << "CPU Model: " << modelName << "\n";
+    ss << "CPU Cores: " << cores << "\n";
+    ss << "Current Freq: " << CPU.frequency << " MHz\n";
+    ss << "Max Freq: " << CPU.frequencyMax << " MHz\n";
 
-    file.close();
-    return result;
+    rawCPU = ss.str(); // Store the formatted info
+    return rawCPU;
 }
 
-// ------------------ Mise à jour globale ------------------
+
 bool CpuMonitor::update() {
-    CPU.usageCPU = getCpuUsage();
-    CPU.frequency = getCpuFreq();
-    rawCPU = getCpuInfo();
-
-    // Affichage temporaire dans le terminal
-    std::cout << "CPU Usage      : " << CPU.usageCPU << " %" << std::endl;
-    std::cout << "CPU Frequency  : " << CPU.frequency << " MHz" << std::endl;
-    std::cout << "CPU Max Freq   : " << CPU.frequencyMax << " MHz" << std::endl;
-    std::cout << "Number of CPUs : " << CPU.nbrCPU << std::endl;
-
+    getCpuUsage(); // This also updates currentTimes and previousTimes
+    getCpuFreq();
+    // getCpuInfo(); // No need to call this on every update unless the model changes
     return true;
 }
-

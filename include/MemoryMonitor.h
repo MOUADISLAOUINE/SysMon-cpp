@@ -12,7 +12,7 @@ typedef struct ram{
     float freeSwp;
     std::size_t totalMemInMb;
     std::size_t SwapMeminMb;
-} ram;
+} RAM;
 
 class MemoryMonitor {
 protected:
@@ -23,7 +23,7 @@ public:
     MemoryMonitor();
     
     ~MemoryMonitor();
-
+   
     bool update();
 
     unsigned long long getTotalMemory() const;

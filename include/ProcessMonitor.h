@@ -9,31 +9,38 @@
 typedef struct ap{
     float cpu;
     float memory;
-    struct time;
+    // struct time; // Removed: This was an incomplete type.
     std::string user;
     std::string pathName;
+    long long uptime; // Added for process uptime if needed
+    long pid; // Added for process ID
 } activeProcesses;
 
 
 
 class ProcessMonitor{
 protected:
-    activeProcesses AP;
-    int nbrProcess;
+    // This should probably be a vector of activeProcesses to store multiple processes
+    // activeProcesses AP; // Changed to vector
+    std::vector<activeProcesses> activeProcessesList; 
+    int nbrProcess; //
 
 public:
     
-    ProcessMonitor();
+    ProcessMonitor(); //
 
-    ~ProcessMonitor();
+    ~ProcessMonitor(); //
 
-    bool update();
+    bool update(); //
 
-    activeProcesses getProcess(int);
+    // activeProcesses getProcess(int); // This method might be better handled by returning the list
     
-    std::string getProcessInfo();
+    std::string getProcessInfo(); //
 
-    std::string getProcessRaw();
+    std::string getProcessRaw(); //
+
+    // Added a getter for the process list
+    const std::vector<activeProcesses>& getActiveProcesses() const;
 
 };
 
